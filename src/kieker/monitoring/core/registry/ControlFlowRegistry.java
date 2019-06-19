@@ -43,6 +43,7 @@ public enum ControlFlowRegistry { // Singleton (Effective Java #3)
 	private final transient ThreadLocal<Long> threadLocalTraceId = new ThreadLocal<Long>();
 	private final transient ThreadLocal<Integer> threadLocalEoi = new ThreadLocal<Integer>();
 	private final transient ThreadLocal<Integer> threadLocalEss = new ThreadLocal<Integer>();
+	private final transient ThreadLocal<String> threadLocalSignature = new ThreadLocal<>();
 
 	static {
 		LOG.info("First threadId will be " + INSTANCE.lastThreadId.get());
@@ -185,6 +186,18 @@ public enum ControlFlowRegistry { // Singleton (Effective Java #3)
 		}
 		this.threadLocalEss.set(curEss + 1);
 		return curEss;
+	}
+	
+	public final String getLocalThreadSignature() {
+		
+		return this.threadLocalSignature.get();
+		
+	}
+	
+	public final void setLocalThreadSignature(String signature) {
+		
+		this.threadLocalSignature.set(signature);
+		
 	}
 
 	/**

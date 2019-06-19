@@ -16,11 +16,18 @@
 
 package kieker.monitoring.probe.spring.executions;
 
+import java.lang.annotation.Annotation;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.aop.framework.AopProxy;
+import org.springframework.aop.framework.ReflectiveMethodInvocation;
 
-import kieker.common.logging.Log;
-import kieker.common.logging.LogFactory;
 import kieker.common.record.controlflow.OperationExecutionRecord;
 import kieker.monitoring.core.controller.IMonitoringController;
 import kieker.monitoring.core.controller.MonitoringController;
@@ -31,18 +38,24 @@ import kieker.monitoring.timer.ITimeSource;
 
 /**
  * @author Marco Luebcke, Andre van Hoorn, Jan Waller
- * 
+ *
  * @since 0.91
  */
 public class OperationExecutionMethodInvocationInterceptor implements MethodInterceptor, IMonitoringProbe {
-	private static final Log LOG = LogFactory.getLog(OperationExecutionMethodInvocationInterceptor.class);
+	private static final Logger LOGGER = LoggerFactory.getLogger(OperationExecutionMethodInvocationInterceptor.class);
 
 	private static final SessionRegistry SESSION_REGISTRY = SessionRegistry.INSTANCE;
 	private static final ControlFlowRegistry CF_REGISTRY = ControlFlowRegistry.INSTANCE;
-
+	
 	private final IMonitoringController monitoringCtrl;
 	private final ITimeSource timeSource;
 	private final String hostname;
+	
+	private OperationExecutionMethodInvocationDaoBuilder daoBuilderBean;
+	
+	private static final String NODE_TYPE_CLASS_FUNCTION = "CLASS-FUNCTION";
+	private static final String NODE_TYPE_DATABASE_SQL = "DATABASE-SQL";
+	private static final String PERSISTENT_TYPE_MYBATIS = "MyBatisDao";
 
 	public OperationExecutionMethodInvocationInterceptor() {
 		this(MonitoringController.getInstance());
@@ -50,7 +63,7 @@ public class OperationExecutionMethodInvocationInterceptor implements MethodInte
 
 	/**
 	 * This constructor is mainly used for testing, providing a custom {@link IMonitoringController} instead of using the singleton instance.
-	 * 
+	 *
 	 * @param monitoringController
 	 *            must not be null
 	 */
@@ -65,12 +78,20 @@ public class OperationExecutionMethodInvocationInterceptor implements MethodInte
 	 */
 	@Override
 	public Object invoke(final MethodInvocation invocation) throws Throwable { // NOCS (IllegalThrowsCheck)
+		
 		if (!this.monitoringCtrl.isMonitoringEnabled()) {
 			return invocation.proceed();
 		}
 		final String signature = invocation.getMethod().toString();
 		if (!this.monitoringCtrl.isProbeActivated(signature)) {
 			return invocation.proceed();
+		}
+		
+		String previousSignature = CF_REGISTRY.getLocalThreadSignature();
+		if (signature != null && previousSignature != null && previousSignature.equalsIgnoreCase(signature)) {
+			return invocation.proceed();
+		} else {
+			CF_REGISTRY.setLocalThreadSignature(signature);
 		}
 
 		final String sessionId = SESSION_REGISTRY.recallThreadLocalSessionId();
@@ -90,7 +111,7 @@ public class OperationExecutionMethodInvocationInterceptor implements MethodInte
 			eoi = CF_REGISTRY.incrementAndRecallThreadLocalEOI(); // ess > 1
 			ess = CF_REGISTRY.recallAndIncrementThreadLocalESS(); // ess >= 0
 			if ((eoi == -1) || (ess == -1)) {
-				LOG.error("eoi and/or ess have invalid values:" + " eoi == " + eoi + " ess == " + ess);
+				LOGGER.error("eoi and/or ess have invalid values: eoi == {} ess == {}", eoi, ess);
 				this.monitoringCtrl.terminateMonitoring();
 			}
 		}
@@ -100,8 +121,31 @@ public class OperationExecutionMethodInvocationInterceptor implements MethodInte
 			retval = invocation.proceed();
 		} finally {
 			final long tout = this.timeSource.getTime();
+			
+			String lable = signature;
+			
+			try {
+				
+				if (signature.toLowerCase().indexOf("cruddao") != -1) {
+					
+					lable = (((ReflectiveMethodInvocation)invocation).targetClass).getInterfaces()[0].getName() + "." + invocation.getMethod().getName();
+					
+				}
+				
+			} catch (Exception e) {
+				
+				lable = signature;
+				
+				e.printStackTrace();
+				
+			}
+			
 			this.monitoringCtrl.newMonitoringRecord(
-					new OperationExecutionRecord(signature, sessionId, traceId, tin, tout, this.hostname, eoi, ess));
+					new OperationExecutionRecord(lable, sessionId, traceId, tin, tout, NODE_TYPE_CLASS_FUNCTION, eoi, ess, SqlParserUtility.currentModuleName));
+			
+			// record sql information: sql id, tableName.
+			recordSQLInfo4DaoInstance(invocation, ess + 1);
+			
 			// cleanup
 			if (entrypoint) {
 				CF_REGISTRY.unsetThreadLocalTraceId();
@@ -110,7 +154,103 @@ public class OperationExecutionMethodInvocationInterceptor implements MethodInte
 			} else {
 				CF_REGISTRY.storeThreadLocalESS(ess); // next operation is ess
 			}
+			
 		}
 		return retval;
 	}
+	
+	private void recordSQLInfo4DaoInstance(final MethodInvocation invocation, int parentNodeIndex) {
+		
+		try
+		{
+			
+			if (isPersistentClassMethod(invocation)) {
+				
+				Map<String, List<String>> tableInfoMap = daoBuilderBean.parsePersistentMethodSqlInfo(invocation);
+				
+				Iterator<String> tableNameIterator = tableInfoMap.keySet().iterator();
+				
+				while (tableNameIterator.hasNext()) {
+					
+					String sqlId = tableNameIterator.next();
+					
+//					recordSQLTableInfo(NODE_TYPE_DATABASE_SQL, sqlId, parentNodeIndex);
+					
+					List<String> tableNameList = tableInfoMap.get(sqlId);
+					
+					int tableParentSqlIndex = parentNodeIndex;// + 1;
+					
+					for (int i = 0; i < tableNameList.size(); i++) {
+						
+						recordSQLTableInfo(NODE_TYPE_DATABASE_SQL, tableNameList.get(i).trim().toLowerCase(), tableParentSqlIndex);
+						
+//						for (int j = i; j < tableNameList.size(); j++) {
+//							
+//							recordSQLTableInfo(NODE_TYPE_DATABASE_SQL, tableNameList.get(j), tableParentSqlIndex + 1);
+//							
+//						}
+					}
+					
+				}
+				
+			}
+		} catch (Exception e) {
+			
+			LOGGER.warn(e.getMessage());
+			
+		}
+		
+	}
+	
+	private void recordSQLTableInfo(String nodeType, final String tableName, final int parentNodeIndex) {
+		
+		final String sessionId = SESSION_REGISTRY.recallThreadLocalSessionId();
+		final int eoi; // this is executionOrderIndex-th execution in this trace
+		final int ess; // this is the height in the dynamic call tree of this execution
+		long traceId = CF_REGISTRY.recallThreadLocalTraceId(); // traceId, -1 if entry point
+		if (traceId == -1) {
+			traceId = CF_REGISTRY.getAndStoreUniqueThreadLocalTraceId();
+			CF_REGISTRY.storeThreadLocalEOI(0);
+			CF_REGISTRY.storeThreadLocalESS(1); // next operation is ess + 1
+			eoi = 0;
+			ess = 0;
+		} else {
+			eoi = CF_REGISTRY.incrementAndRecallThreadLocalEOI(); // ess > 1
+			ess = parentNodeIndex;//CF_REGISTRY.recallAndIncrementThreadLocalESS(); // ess >= 0
+			if ((eoi == -1) || (ess == -1)) {
+				LOGGER.error("eoi and/or ess have invalid values: eoi == {} ess == {}", eoi, ess);
+				this.monitoringCtrl.terminateMonitoring();
+			}
+		}
+		final long tin = this.timeSource.getTime();
+		final long tout = tin;//this.timeSource.getTime();
+		final String moduleName = SqlParserUtility.currentModuleName;
+		
+		this.monitoringCtrl.newMonitoringRecord(
+				new OperationExecutionRecord(tableName, sessionId, traceId, tin, tout, nodeType, eoi, ess, moduleName));
+		
+	}
+	
+	private boolean isPersistentClassMethod(final MethodInvocation invocation) {
+		
+		Annotation[] annotations4Class = (((ReflectiveMethodInvocation)invocation).targetClass).getInterfaces()[0].getAnnotations();
+		
+		for (Annotation anno : annotations4Class) {
+			
+			if (PERSISTENT_TYPE_MYBATIS.equalsIgnoreCase(anno.annotationType().getSimpleName())) {
+				
+				return true;
+				
+			}
+			
+		}
+		
+		return false;
+		
+	}
+	
+	public void setDaoBuilderBean(OperationExecutionMethodInvocationDaoBuilder daoBuilderBean) {
+		this.daoBuilderBean = daoBuilderBean;
+	}
+
 }

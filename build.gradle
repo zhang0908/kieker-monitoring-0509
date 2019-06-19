@@ -10,11 +10,13 @@ dependencies {
 	compile resolveLibrary('aspectjweaver-*.jar')
 	compile resolveLibrary('disl-2.0/disl-server.jar')
 	compile resolveLibrary('sigar/sigar-*.jar')
+	compile resolveLibrary('mybatis-3.2.8.jar')
 
 	compile 'org.apache.kafka:kafka-clients:0.11.0.1'
 
 	compile 'org.apache.cxf:cxf-bundle-minimal:2.6.15'
 	compile resolveLibrary('framework-libs/jsr311-api-1.1.1.jar')
+	compile resolveLibrary('framework-libs/spring-aop-4.2.9.RELEASE.jar')
 	compile resolveLibrary('framework-libs/javax.ws.rs-api-2.0.1.jar')
 	compile resolveLibrary('framework-libs/jersey/jersey-server-1.19.jar')
 	compile resolveLibrary('framework-libs/jersey/jersey-client-1.19.jar')
@@ -26,6 +28,7 @@ dependencies {
 	compile resolveLibrary('framework-libs/spring/spring-core-*.jar')
 	compile resolveLibrary('framework-libs/spring/spring-web-*.jar')
 	compile resolveLibrary('framework-libs/spring/spring-webmvc-*.jar')
+	compile resolveLibrary('jsqlparser-*.jar')
 
 	// this project depends on the tests of kieker-common, e.g., it requires the class AbstractKiekerTest
 	testCompile project (path: ':kieker-common', configuration: 'testArchives')
